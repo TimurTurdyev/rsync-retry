@@ -5,6 +5,7 @@ set -u
 ATTEMPTS=10
 DELAY=10
 TIMEOUT=120
+LOG=
 
 usage() {
     cat <<'EOF'
@@ -12,6 +13,7 @@ usage() {
   rsync-retry [флаги] ИСТОЧНИК ЦЕЛЬ
 
 Флаги:
+      --log ФАЙЛ        писать вывод в файл, а не на экран
   -h, --help            эта справка
 EOF
 }
@@ -22,12 +24,13 @@ die() {
 }
 
 log() {
-    echo "rsync-retry: $*"
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*"
 }
 
 parse_args() {
     while [ $# -gt 0 ]; do
         case $1 in
+            --log) LOG=${2:-}; shift ;;
             -h | --help) usage; exit 0 ;;
             -*) die "неизвестный флаг $1, см. --help" ;;
             *)
@@ -47,7 +50,13 @@ parse_args() {
 }
 
 run() {
-    local attempt=1 code
+    local attempt=1 code started
+    started=$(date +%s)
+
+    if [ -n "$LOG" ]; then
+        mkdir -p "$(dirname "$LOG")"
+        exec >> "$LOG" 2>&1
+    fi
 
     log "старт: $SOURCE -> $TARGET"
 
@@ -58,7 +67,7 @@ run() {
         code=$?
 
         if [ "$code" = 0 ]; then
-            log "готово, попыток: $attempt"
+            log "готово за $(( $(date +%s) - started )) сек, попыток: $attempt"
             exit 0
         fi
 
