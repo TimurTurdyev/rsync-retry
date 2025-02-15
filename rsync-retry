@@ -1,0 +1,82 @@
+#!/usr/bin/env bash
+# rsync с повторами при обрыве связи: большие папки между серверами без присмотра.
+set -u
+
+ATTEMPTS=10
+DELAY=10
+TIMEOUT=120
+
+usage() {
+    cat <<'EOF'
+Использование:
+  rsync-retry [флаги] ИСТОЧНИК ЦЕЛЬ
+
+Флаги:
+  -h, --help            эта справка
+EOF
+}
+
+die() {
+    echo "rsync-retry: $*" >&2
+    exit 64
+}
+
+log() {
+    echo "rsync-retry: $*"
+}
+
+parse_args() {
+    while [ $# -gt 0 ]; do
+        case $1 in
+            -h | --help) usage; exit 0 ;;
+            -*) die "неизвестный флаг $1, см. --help" ;;
+            *)
+                if [ -z "${SOURCE:-}" ]; then
+                    SOURCE=$1
+                elif [ -z "${TARGET:-}" ]; then
+                    TARGET=$1
+                else
+                    die "лишний аргумент $1"
+                fi
+                ;;
+        esac
+        shift
+    done
+
+    [ -n "${SOURCE:-}" ] && [ -n "${TARGET:-}" ] || die "нужны ИСТОЧНИК и ЦЕЛЬ, см. --help"
+}
+
+run() {
+    local attempt=1 code
+
+    log "старт: $SOURCE -> $TARGET"
+
+    while true; do
+        log "попытка $attempt из $ATTEMPTS"
+
+        rsync -ah --partial --stats --timeout="$TIMEOUT" "$SOURCE" "$TARGET"
+        code=$?
+
+        if [ "$code" = 0 ]; then
+            log "готово, попыток: $attempt"
+            exit 0
+        fi
+
+        if [ "$attempt" -ge "$ATTEMPTS" ]; then
+            log "ошибка rsync $code, попытки кончились"
+            exit "$code"
+        fi
+
+        log "ошибка rsync $code, повтор через $DELAY сек"
+        sleep "$DELAY"
+        attempt=$(( attempt + 1 ))
+    done
+}
+
+if [ $# -eq 0 ]; then
+    usage
+    exit 64
+fi
+
+parse_args "$@"
+run
