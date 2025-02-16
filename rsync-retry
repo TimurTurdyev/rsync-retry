@@ -13,6 +13,9 @@ usage() {
   rsync-retry [флаги] ИСТОЧНИК ЦЕЛЬ
 
 Флаги:
+  -a, --attempts N      сколько раз пробовать, 0 - без ограничения (10)
+  -d, --delay СЕК       пауза между попытками (10)
+  -t, --timeout СЕК     обрыв, если данные не идут столько секунд (120)
       --log ФАЙЛ        писать вывод в файл, а не на экран
   -h, --help            эта справка
 EOF
@@ -27,9 +30,18 @@ log() {
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*"
 }
 
+is_number() {
+    case $1 in
+        '' | *[!0-9]*) return 1 ;;
+    esac
+}
+
 parse_args() {
     while [ $# -gt 0 ]; do
         case $1 in
+            -a | --attempts) ATTEMPTS=${2:-}; shift ;;
+            -d | --delay) DELAY=${2:-}; shift ;;
+            -t | --timeout) TIMEOUT=${2:-}; shift ;;
             --log) LOG=${2:-}; shift ;;
             -h | --help) usage; exit 0 ;;
             -*) die "неизвестный флаг $1, см. --help" ;;
@@ -47,6 +59,10 @@ parse_args() {
     done
 
     [ -n "${SOURCE:-}" ] && [ -n "${TARGET:-}" ] || die "нужны ИСТОЧНИК и ЦЕЛЬ, см. --help"
+
+    for value in "$ATTEMPTS" "$DELAY" "$TIMEOUT"; do
+        is_number "$value" || die "ожидалось целое число, а не '$value'"
+    done
 }
 
 run() {
@@ -61,7 +77,11 @@ run() {
     log "старт: $SOURCE -> $TARGET"
 
     while true; do
-        log "попытка $attempt из $ATTEMPTS"
+        if [ "$ATTEMPTS" = 0 ]; then
+            log "попытка $attempt"
+        else
+            log "попытка $attempt из $ATTEMPTS"
+        fi
 
         rsync -ah --partial --stats --timeout="$TIMEOUT" "$SOURCE" "$TARGET"
         code=$?
@@ -71,7 +91,7 @@ run() {
             exit 0
         fi
 
-        if [ "$attempt" -ge "$ATTEMPTS" ]; then
+        if [ "$ATTEMPTS" != 0 ] && [ "$attempt" -ge "$ATTEMPTS" ]; then
             log "ошибка rsync $code, попытки кончились"
             exit "$code"
         fi
