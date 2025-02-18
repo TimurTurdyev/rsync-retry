@@ -4,6 +4,7 @@ set -u
 
 ATTEMPTS=10
 DELAY=10
+MAX_DELAY=300
 TIMEOUT=120
 LOG=
 
@@ -14,7 +15,8 @@ usage() {
 
 Флаги:
   -a, --attempts N      сколько раз пробовать, 0 - без ограничения (10)
-  -d, --delay СЕК       пауза между попытками (10)
+  -d, --delay СЕК       пауза после первой неудачи, дальше растет вдвое (10)
+  -m, --max-delay СЕК   предел паузы (300)
   -t, --timeout СЕК     обрыв, если данные не идут столько секунд (120)
       --log ФАЙЛ        писать вывод в файл, а не на экран
   -h, --help            эта справка
@@ -41,6 +43,7 @@ parse_args() {
         case $1 in
             -a | --attempts) ATTEMPTS=${2:-}; shift ;;
             -d | --delay) DELAY=${2:-}; shift ;;
+            -m | --max-delay) MAX_DELAY=${2:-}; shift ;;
             -t | --timeout) TIMEOUT=${2:-}; shift ;;
             --log) LOG=${2:-}; shift ;;
             -h | --help) usage; exit 0 ;;
@@ -60,13 +63,13 @@ parse_args() {
 
     [ -n "${SOURCE:-}" ] && [ -n "${TARGET:-}" ] || die "нужны ИСТОЧНИК и ЦЕЛЬ, см. --help"
 
-    for value in "$ATTEMPTS" "$DELAY" "$TIMEOUT"; do
+    for value in "$ATTEMPTS" "$DELAY" "$MAX_DELAY" "$TIMEOUT"; do
         is_number "$value" || die "ожидалось целое число, а не '$value'"
     done
 }
 
 run() {
-    local attempt=1 code started
+    local attempt=1 delay=$DELAY code started
     started=$(date +%s)
 
     if [ -n "$LOG" ]; then
@@ -96,8 +99,9 @@ run() {
             exit "$code"
         fi
 
-        log "ошибка rsync $code, повтор через $DELAY сек"
-        sleep "$DELAY"
+        log "ошибка rsync $code, повтор через $delay сек"
+        sleep "$delay"
+        delay=$(( delay * 2 > MAX_DELAY ? MAX_DELAY : delay * 2 ))
         attempt=$(( attempt + 1 ))
     done
 }
