@@ -68,6 +68,15 @@ parse_args() {
     done
 }
 
+# Коды rsync, после которых есть смысл пробовать снова: сеть, ssh, таймауты.
+# Остальное (синтаксис, права, место на диске) повтором не лечится.
+is_retryable() {
+    case $1 in
+        5 | 10 | 12 | 30 | 35 | 255) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
 run() {
     local attempt=1 delay=$DELAY code started
     started=$(date +%s)
@@ -89,9 +98,15 @@ run() {
         rsync -ah --partial --stats --timeout="$TIMEOUT" "$SOURCE" "$TARGET"
         code=$?
 
-        if [ "$code" = 0 ]; then
+        # 24 - часть файлов исчезла во время передачи, остальное доехало.
+        if [ "$code" = 0 ] || [ "$code" = 24 ]; then
             log "готово за $(( $(date +%s) - started )) сек, попыток: $attempt"
             exit 0
+        fi
+
+        if ! is_retryable "$code"; then
+            log "ошибка rsync $code, повтор не поможет"
+            exit "$code"
         fi
 
         if [ "$ATTEMPTS" != 0 ] && [ "$attempt" -ge "$ATTEMPTS" ]; then
