@@ -2,22 +2,30 @@
 # rsync с повторами при обрыве связи: большие папки между серверами без присмотра.
 set -u
 
+STATE_DIR=${RSYNC_RETRY_HOME:-$HOME/.rsync-retry}
+
 ATTEMPTS=10
 DELAY=10
 MAX_DELAY=300
 TIMEOUT=120
+NAME=
 LOG=
+BACKGROUND=0
 
 usage() {
     cat <<'EOF'
 Использование:
   rsync-retry [флаги] ИСТОЧНИК ЦЕЛЬ
+  rsync-retry status [ИМЯ]
+  rsync-retry stop ИМЯ
 
 Флаги:
   -a, --attempts N      сколько раз пробовать, 0 - без ограничения (10)
   -d, --delay СЕК       пауза после первой неудачи, дальше растет вдвое (10)
   -m, --max-delay СЕК   предел паузы (300)
   -t, --timeout СЕК     обрыв, если данные не идут столько секунд (120)
+  -n, --name ИМЯ        имя задачи для status и stop (по умолчанию папка источника)
+  -b, --background      уйти в фон, вывод пишется в лог задачи
       --log ФАЙЛ        писать вывод в файл, а не на экран
   -h, --help            эта справка
 EOF
@@ -45,6 +53,8 @@ parse_args() {
             -d | --delay) DELAY=${2:-}; shift ;;
             -m | --max-delay) MAX_DELAY=${2:-}; shift ;;
             -t | --timeout) TIMEOUT=${2:-}; shift ;;
+            -n | --name) NAME=${2:-}; shift ;;
+            -b | --background) BACKGROUND=1 ;;
             --log) LOG=${2:-}; shift ;;
             -h | --help) usage; exit 0 ;;
             -*) die "неизвестный флаг $1, см. --help" ;;
@@ -66,6 +76,16 @@ parse_args() {
     for value in "$ATTEMPTS" "$DELAY" "$MAX_DELAY" "$TIMEOUT"; do
         is_number "$value" || die "ожидалось целое число, а не '$value'"
     done
+
+    if [ -z "$NAME" ]; then
+        NAME=$(basename "${SOURCE%/}")
+    fi
+
+    NAME=$(printf '%s' "$NAME" | tr -c 'A-Za-z0-9._-' '_')
+
+    if [ -z "$LOG" ] && [ "$BACKGROUND" = 1 ]; then
+        LOG=$STATE_DIR/$NAME.log
+    fi
 }
 
 # Коды rsync, после которых есть смысл пробовать снова: сеть, ssh, таймауты.
@@ -85,6 +105,10 @@ run() {
         mkdir -p "$(dirname "$LOG")"
         exec >> "$LOG" 2>&1
     fi
+
+    mkdir -p "$STATE_DIR"
+    echo $$ > "$STATE_DIR/$NAME.pid"
+    trap 'rm -f "$STATE_DIR/$NAME.pid"' EXIT
 
     log "старт: $SOURCE -> $TARGET"
 
@@ -121,10 +145,83 @@ run() {
     done
 }
 
-if [ $# -eq 0 ]; then
-    usage
-    exit 64
-fi
+# Фоновый запуск: тот же скрипт под nohup, флаг -b уже не нужен.
+background() {
+    local args=() arg
 
-parse_args "$@"
-run
+    for arg in "$@"; do
+        [ "$arg" = -b ] || [ "$arg" = --background ] || args+=("$arg")
+    done
+
+    mkdir -p "$STATE_DIR"
+    nohup "$0" --log "$LOG" "${args[@]}" > /dev/null 2>&1 &
+
+    echo "задача $NAME запущена в фоне, pid $!"
+    echo "лог: $LOG"
+    echo "ход: rsync-retry status $NAME, остановить: rsync-retry stop $NAME"
+}
+
+status() {
+    local name=${1:-} pid file
+
+    if [ -z "$name" ]; then
+        for file in "$STATE_DIR"/*.pid; do
+            [ -e "$file" ] || { echo "нет запущенных задач"; return 0; }
+            name=$(basename "$file" .pid)
+            pid=$(cat "$file")
+            echo "$name: pid $pid"
+        done
+
+        return 0
+    fi
+
+    pid=$(cat "$STATE_DIR/$name.pid" 2>/dev/null)
+
+    if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+        echo "$name: идет, pid $pid"
+    else
+        echo "$name: не запущена"
+    fi
+
+    if [ -f "$STATE_DIR/$name.log" ]; then
+        grep '^\[' "$STATE_DIR/$name.log" | tail -n 5
+    fi
+}
+
+stop() {
+    local name=${1:-} pid waited=0
+
+    [ -n "$name" ] || die "укажите имя задачи, список: rsync-retry status"
+
+    pid=$(cat "$STATE_DIR/$name.pid" 2>/dev/null)
+
+    if [ -z "$pid" ] || ! kill -0 "$pid" 2>/dev/null; then
+        echo "$name: не запущена"
+        return 0
+    fi
+
+    kill -TERM "$pid"
+
+    while [ "$waited" -lt 10 ]; do
+        kill -0 "$pid" 2>/dev/null || { echo "$name: остановлена"; return 0; }
+        sleep 1
+        waited=$(( waited + 1 ))
+    done
+
+    die "$name не остановилась за 10 сек, pid $pid"
+}
+
+case ${1:-} in
+    status) shift; status "$@" ;;
+    stop) shift; stop "$@" ;;
+    '') usage; exit 64 ;;
+    *)
+        parse_args "$@"
+
+        if [ "$BACKGROUND" = 1 ]; then
+            background "$@"
+        else
+            run
+        fi
+        ;;
+esac
