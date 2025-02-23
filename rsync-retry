@@ -97,6 +97,31 @@ is_retryable() {
     esac
 }
 
+# Каталог-замок создается атомарно. Если владелец умер, замок снимается.
+lock() {
+    mkdir -p "$STATE_DIR"
+
+    if mkdir "$STATE_DIR/$NAME.lock" 2>/dev/null; then
+        echo $$ > "$STATE_DIR/$NAME.pid"
+        return 0
+    fi
+
+    local pid
+    pid=$(cat "$STATE_DIR/$NAME.pid" 2>/dev/null)
+
+    if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+        die "задача $NAME уже идет (pid $pid), см. rsync-retry status $NAME"
+    fi
+
+    rm -rf "$STATE_DIR/$NAME.lock" "$STATE_DIR/$NAME.pid"
+    mkdir "$STATE_DIR/$NAME.lock" 2>/dev/null || die "не удалось занять задачу $NAME"
+    echo $$ > "$STATE_DIR/$NAME.pid"
+}
+
+unlock() {
+    rm -rf "$STATE_DIR/$NAME.lock" "$STATE_DIR/$NAME.pid"
+}
+
 run() {
     local attempt=1 delay=$DELAY code started
     started=$(date +%s)
@@ -106,9 +131,8 @@ run() {
         exec >> "$LOG" 2>&1
     fi
 
-    mkdir -p "$STATE_DIR"
-    echo $$ > "$STATE_DIR/$NAME.pid"
-    trap 'rm -f "$STATE_DIR/$NAME.pid"' EXIT
+    lock
+    trap unlock EXIT
 
     log "старт: $SOURCE -> $TARGET"
 
@@ -147,11 +171,17 @@ run() {
 
 # Фоновый запуск: тот же скрипт под nohup, флаг -b уже не нужен.
 background() {
-    local args=() arg
+    local args=() arg pid
 
     for arg in "$@"; do
         [ "$arg" = -b ] || [ "$arg" = --background ] || args+=("$arg")
     done
+
+    pid=$(cat "$STATE_DIR/$NAME.pid" 2>/dev/null)
+
+    if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+        die "задача $NAME уже идет (pid $pid), см. rsync-retry status $NAME"
+    fi
 
     mkdir -p "$STATE_DIR"
     nohup "$0" --log "$LOG" "${args[@]}" > /dev/null 2>&1 &
