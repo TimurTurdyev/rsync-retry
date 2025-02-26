@@ -12,6 +12,9 @@ NAME=
 LOG=
 BACKGROUND=0
 
+RSYNC_PID=
+STOPPED=0
+
 usage() {
     cat <<'EOF'
 Использование:
@@ -122,6 +125,14 @@ unlock() {
     rm -rf "$STATE_DIR/$NAME.lock" "$STATE_DIR/$NAME.pid"
 }
 
+on_signal() {
+    STOPPED=1
+
+    if [ -n "$RSYNC_PID" ]; then
+        kill -TERM "$RSYNC_PID" 2>/dev/null
+    fi
+}
+
 run() {
     local attempt=1 delay=$DELAY code started
     started=$(date +%s)
@@ -133,6 +144,7 @@ run() {
 
     lock
     trap unlock EXIT
+    trap on_signal INT TERM
 
     log "старт: $SOURCE -> $TARGET"
 
@@ -143,8 +155,19 @@ run() {
             log "попытка $attempt из $ATTEMPTS"
         fi
 
-        rsync -ah --partial --stats --timeout="$TIMEOUT" "$SOURCE" "$TARGET"
+        rsync -ah --partial --stats --timeout="$TIMEOUT" "$SOURCE" "$TARGET" &
+
+        RSYNC_PID=$!
+        wait "$RSYNC_PID"
         code=$?
+
+        if [ "$STOPPED" = 1 ]; then
+            wait "$RSYNC_PID" 2>/dev/null
+            log "остановлено на попытке $attempt"
+            exit 143
+        fi
+
+        RSYNC_PID=
 
         # 24 - часть файлов исчезла во время передачи, остальное доехало.
         if [ "$code" = 0 ] || [ "$code" = 24 ]; then
@@ -163,7 +186,16 @@ run() {
         fi
 
         log "ошибка rsync $code, повтор через $delay сек"
-        sleep "$delay"
+        sleep "$delay" &
+        RSYNC_PID=$!
+        wait "$RSYNC_PID"
+        RSYNC_PID=
+
+        if [ "$STOPPED" = 1 ]; then
+            log "остановлено во время паузы"
+            exit 143
+        fi
+
         delay=$(( delay * 2 > MAX_DELAY ? MAX_DELAY : delay * 2 ))
         attempt=$(( attempt + 1 ))
     done
