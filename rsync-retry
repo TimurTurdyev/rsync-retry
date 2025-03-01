@@ -11,6 +11,7 @@ TIMEOUT=120
 NAME=
 LOG=
 BACKGROUND=0
+RSYNC_OPTS=()
 
 RSYNC_PID=
 STOPPED=0
@@ -18,7 +19,7 @@ STOPPED=0
 usage() {
     cat <<'EOF'
 Использование:
-  rsync-retry [флаги] ИСТОЧНИК ЦЕЛЬ
+  rsync-retry [флаги] ИСТОЧНИК ЦЕЛЬ [-- флаги rsync]
   rsync-retry status [ИМЯ]
   rsync-retry stop ИМЯ
 
@@ -27,6 +28,8 @@ usage() {
   -d, --delay СЕК       пауза после первой неудачи, дальше растет вдвое (10)
   -m, --max-delay СЕК   предел паузы (300)
   -t, --timeout СЕК     обрыв, если данные не идут столько секунд (120)
+  -e, --exclude ШАБЛОН  не передавать, можно повторять
+  -l, --bwlimit СКОР    ограничение скорости, как у rsync: 5m, 500k
   -n, --name ИМЯ        имя задачи для status и stop (по умолчанию папка источника)
   -b, --background      уйти в фон, вывод пишется в лог задачи
       --log ФАЙЛ        писать вывод в файл, а не на экран
@@ -56,10 +59,13 @@ parse_args() {
             -d | --delay) DELAY=${2:-}; shift ;;
             -m | --max-delay) MAX_DELAY=${2:-}; shift ;;
             -t | --timeout) TIMEOUT=${2:-}; shift ;;
+            -e | --exclude) RSYNC_OPTS+=("--exclude=${2:-}"); shift ;;
+            -l | --bwlimit) RSYNC_OPTS+=("--bwlimit=${2:-}"); shift ;;
             -n | --name) NAME=${2:-}; shift ;;
             -b | --background) BACKGROUND=1 ;;
             --log) LOG=${2:-}; shift ;;
             -h | --help) usage; exit 0 ;;
+            --) shift; RSYNC_OPTS+=("$@"); break ;;
             -*) die "неизвестный флаг $1, см. --help" ;;
             *)
                 if [ -z "${SOURCE:-}" ]; then
@@ -155,7 +161,7 @@ run() {
             log "попытка $attempt из $ATTEMPTS"
         fi
 
-        rsync -ah --partial --stats --timeout="$TIMEOUT" "$SOURCE" "$TARGET" &
+        rsync -ah --partial --stats --timeout="$TIMEOUT" ${RSYNC_OPTS[@]+"${RSYNC_OPTS[@]}"} "$SOURCE" "$TARGET" &
 
         RSYNC_PID=$!
         wait "$RSYNC_PID"
