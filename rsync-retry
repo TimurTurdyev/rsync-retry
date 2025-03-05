@@ -11,6 +11,8 @@ TIMEOUT=120
 NAME=
 LOG=
 BACKGROUND=0
+ON_SUCCESS=
+ON_FAILURE=
 RSYNC_OPTS=()
 
 RSYNC_PID=
@@ -33,6 +35,8 @@ usage() {
   -n, --name ИМЯ        имя задачи для status и stop (по умолчанию папка источника)
   -b, --background      уйти в фон, вывод пишется в лог задачи
       --log ФАЙЛ        писать вывод в файл, а не на экран
+      --on-success КМД  выполнить после успешной передачи
+      --on-failure КМД  выполнить, если передать не удалось
   -h, --help            эта справка
 EOF
 }
@@ -64,6 +68,8 @@ parse_args() {
             -n | --name) NAME=${2:-}; shift ;;
             -b | --background) BACKGROUND=1 ;;
             --log) LOG=${2:-}; shift ;;
+            --on-success) ON_SUCCESS=${2:-}; shift ;;
+            --on-failure) ON_FAILURE=${2:-}; shift ;;
             -h | --help) usage; exit 0 ;;
             --) shift; RSYNC_OPTS+=("$@"); break ;;
             -*) die "неизвестный флаг $1, см. --help" ;;
@@ -139,6 +145,15 @@ on_signal() {
     fi
 }
 
+hook() {
+    local command=$1 status=$2 attempt=$3 code=$4
+
+    [ -n "$command" ] || return 0
+
+    RSYNC_RETRY_NAME=$NAME RSYNC_RETRY_STATUS=$status RSYNC_RETRY_ATTEMPTS=$attempt \
+        RSYNC_RETRY_CODE=$code RSYNC_RETRY_LOG=$LOG sh -c "$command" || log "команда после передачи завершилась с ошибкой"
+}
+
 run() {
     local attempt=1 delay=$DELAY code started
     started=$(date +%s)
@@ -178,16 +193,19 @@ run() {
         # 24 - часть файлов исчезла во время передачи, остальное доехало.
         if [ "$code" = 0 ] || [ "$code" = 24 ]; then
             log "готово за $(( $(date +%s) - started )) сек, попыток: $attempt"
+            hook "$ON_SUCCESS" ok "$attempt" "$code"
             exit 0
         fi
 
         if ! is_retryable "$code"; then
             log "ошибка rsync $code, повтор не поможет"
+            hook "$ON_FAILURE" failed "$attempt" "$code"
             exit "$code"
         fi
 
         if [ "$ATTEMPTS" != 0 ] && [ "$attempt" -ge "$ATTEMPTS" ]; then
             log "ошибка rsync $code, попытки кончились"
+            hook "$ON_FAILURE" failed "$attempt" "$code"
             exit "$code"
         fi
 
