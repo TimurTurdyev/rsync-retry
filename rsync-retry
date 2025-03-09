@@ -2,6 +2,7 @@
 # rsync с повторами при обрыве связи: большие папки между серверами без присмотра.
 set -u
 
+VERSION=1.0.0
 STATE_DIR=${RSYNC_RETRY_HOME:-$HOME/.rsync-retry}
 
 ATTEMPTS=10
@@ -38,6 +39,7 @@ usage() {
       --on-success КМД  выполнить после успешной передачи
       --on-failure КМД  выполнить, если передать не удалось
   -h, --help            эта справка
+  -V, --version         версия
 EOF
 }
 
@@ -71,6 +73,7 @@ parse_args() {
             --on-success) ON_SUCCESS=${2:-}; shift ;;
             --on-failure) ON_FAILURE=${2:-}; shift ;;
             -h | --help) usage; exit 0 ;;
+            -V | --version) echo "rsync-retry $VERSION"; exit 0 ;;
             --) shift; RSYNC_OPTS+=("$@"); break ;;
             -*) die "неизвестный флаг $1, см. --help" ;;
             *)
